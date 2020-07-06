@@ -50,6 +50,7 @@ type KubernetesMetaConfiguration struct {
 	PodTerminateGracePeriod                Duration              `json:"pod_terminate_grace_period,omitempty"`
 	SpiloPrivileged                        bool                  `json:"spilo_privileged,omitempty"`
 	SpiloFSGroup                           *int64                `json:"spilo_fsgroup,omitempty"`
+	SpiloChmodLifecycle                    bool                  `json:"spilo_chmod_lifecycle,omitempty"`
 	WatchedNamespace                       string                `json:"watched_namespace,omitempty"`
 	PDBNameFormat                          config.StringTemplate `json:"pdb_name_format,omitempty"`
 	EnablePodDisruptionBudget              *bool                 `json:"enable_pod_disruption_budget,omitempty"`

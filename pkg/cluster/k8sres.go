@@ -433,8 +433,10 @@ func generateContainer(
 	envVars []v1.EnvVar,
 	volumeMounts []v1.VolumeMount,
 	privilegedMode bool,
+	spiloChmodLifecycle bool,
 ) *v1.Container {
-	return &v1.Container{
+
+	container := &v1.Container{
 		Name:            name,
 		Image:           *dockerImage,
 		ImagePullPolicy: v1.PullIfNotPresent,
@@ -460,6 +462,24 @@ func generateContainer(
 			ReadOnlyRootFilesystem: util.False(),
 		},
 	}
+
+	if spiloChmodLifecycle {
+		command := []string{"/bin/sh", "-c", "if [ -d $PGDATA ]; then chmod 700 $PGDATA; fi"}
+
+		execAction := &v1.ExecAction{
+			Command: command,
+		}
+
+		handler := &v1.Handler{
+			Exec: execAction,
+		}
+
+		lifecycle := &v1.Lifecycle{
+			PostStart: handler,
+		}
+		container.Lifecycle = lifecycle
+	}
+	return container
 }
 
 func generateSidecarContainers(sidecars []acidv1.Sidecar,
@@ -1083,6 +1103,7 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 		deduplicateEnvVars(spiloEnvVars, c.containerName(), c.logger),
 		volumeMounts,
 		c.OpConfig.Resources.SpiloPrivileged,
+		c.OpConfig.Resources.SpiloChmodLifecycle,
 	)
 
 	// generate container specs for sidecars specified in the cluster manifest
@@ -1802,6 +1823,7 @@ func (c *Cluster) generateLogicalBackupJob() (*batchv1beta1.CronJob, error) {
 		envVars,
 		[]v1.VolumeMount{},
 		c.OpConfig.SpiloPrivileged, // use same value as for normal DB pods
+		c.OpConfig.SpiloChmodLifecycle,
 	)
 
 	labels := map[string]string{
