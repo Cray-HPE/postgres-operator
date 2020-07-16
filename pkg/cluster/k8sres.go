@@ -1206,6 +1206,10 @@ func (c *Cluster) generateStatefulSet(spec *acidv1.PostgresSpec) (*appsv1.Statef
 	// that leaves the legacy "OnDelete" update strategy as the only option
 	updateStrategy := appsv1.StatefulSetUpdateStrategy{Type: appsv1.OnDeleteStatefulSetStrategyType}
 
+	if c.OpConfig.UpdateStrategyType == "RollingUpdate" {
+		updateStrategy = appsv1.StatefulSetUpdateStrategy{Type: appsv1.RollingUpdateStatefulSetStrategyType}
+	}
+
 	var podManagementPolicy appsv1.PodManagementPolicyType
 	if c.OpConfig.PodManagementPolicy == "ordered_ready" {
 		podManagementPolicy = appsv1.OrderedReadyPodManagement
