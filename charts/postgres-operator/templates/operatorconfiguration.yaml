@@ -10,6 +10,8 @@ metadata:
     app.kubernetes.io/instance: {{ .Release.Name }}
 configuration:
 {{ toYaml .Values.configGeneral | indent 2 }}
+  sidecars:
+{{ toYaml .Values.sidecars | indent 4 }}
   users:
 {{ toYaml .Values.configUsers | indent 4 }}
   kubernetes:
