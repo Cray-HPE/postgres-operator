@@ -66,15 +66,9 @@ sidecars:
       - name: "DATA_SOURCE_URI"
         value: "localhost:5432/postgres?sslmode=require"
       - name: "DATA_SOURCE_USER"
-        valueFrom:
-          secretKeyRef:
-            name: postgres.{cluster}.credentials
-            key: username
+        value: $(POSTGRES_USER)
       - name: "DATA_SOURCE_PASS"
-        valueFrom:
-          secretKeyRef:
-            name: postgres.{cluster}.credentials
-            key: password
+        value: $(POSTGRES_PASSWORD)        
       - name: "PG_EXPORTER_AUTO_DISCOVER_DATABASES"
         value: "true"
 
