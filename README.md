@@ -54,6 +54,8 @@ production for over two years.
 
 For a quick first impression follow the instructions of this
 [tutorial](docs/quickstart.md).
+**NOTE :** postgres-operator now uses values-crd.yaml as values.yaml(by overwriting default values.yaml),
+to use "operatorconfiguration" instead of "ConfigMap" to enable postgres-exporter as sidecar to "postgres" container.
 
 ## Documentation
 
