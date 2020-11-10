@@ -9,5 +9,5 @@ dockerBuildPipeline {
         name = "postgres-operator"
         description = "Forked Postgres Operator"
         useEntryPointForTest = "false"
-        product = "shasta-standard,shasta-premium"
+        product = "csm"
 }
