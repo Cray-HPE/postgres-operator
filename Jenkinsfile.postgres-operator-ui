@@ -1,0 +1,13 @@
+@Library('dst-shared') _
+
+dockerBuildPipeline {
+        repository = "cray"
+        dockerfile = "./ui/Dockerfile"
+        buildPrepScript = "BINARY=postgres-operator-ui buildPrep.sh"
+        dockerBuildContextDir = "ui"
+        app = "postgres-operator-ui"
+        name = "postgres-operator-ui"
+        description = "Forked Postgres Operator"
+        useEntryPointForTest = "false"
+        product = "csm"
+}

@@ -1,4 +1,4 @@
-FROM alpine
+FROM dtr.dev.cray.com/baseos/alpine:3.12
 MAINTAINER Team ACID @ Zalando <team-acid@zalando.de>
 
 # We need root certificates to deal with teams api over https
