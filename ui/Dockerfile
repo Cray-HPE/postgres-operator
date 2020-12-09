@@ -1,4 +1,4 @@
-FROM alpine:3.6
+FROM dtr.dev.cray.com/baseos/alpine:3.12
 MAINTAINER team-acid@zalando.de
 
 EXPOSE 8081
