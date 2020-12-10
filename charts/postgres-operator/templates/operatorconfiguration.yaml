@@ -1,3 +1,6 @@
+{{- /*
+Copyright 2020 Hewlett Packard Enterprise Development LP
+*/ -}}
 {{- if eq .Values.configTarget "OperatorConfigurationCRD" }}
 apiVersion: "acid.zalan.do/v1"
 kind: OperatorConfiguration

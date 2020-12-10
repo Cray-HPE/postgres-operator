@@ -54,8 +54,11 @@ production for over two years.
 
 For a quick first impression follow the instructions of this
 [tutorial](docs/quickstart.md).
-**NOTE :** postgres-operator now uses values-crd.yaml as values.yaml(by overwriting default values.yaml),
-to use "operatorconfiguration" instead of "ConfigMap" to enable postgres-exporter as sidecar to "postgres" container.
+**NOTE :** postgres-operator now use values.yaml defined from values-crd.yaml in order to use
+"operatorconfiguration" instead of "ConfigMap" to enable sidecar configuration for "postgres" container.
+Previous values.yaml with "ConfigMap" is now renamed as values-configMap.yaml and there is no change in
+values-crd.yaml. values-configMap.yaml and values-crd.yaml files are retained as they are part of open source
+and it will be easy to identify when there is an upgrade.
 
 ## Documentation
 
