@@ -10,4 +10,6 @@ dockerBuildPipeline {
         description = "Forked Postgres Operator"
         useEntryPointForTest = "false"
         product = "csm"
+        githubPushRepo = "Cray-HPE/postgres-operator"
+        githubPushBranches: /(release\/.*|master)/
 }
