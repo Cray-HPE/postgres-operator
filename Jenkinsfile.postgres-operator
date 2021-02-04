@@ -11,5 +11,5 @@ dockerBuildPipeline {
         useEntryPointForTest = "false"
         product = "csm"
         githubPushRepo = "Cray-HPE/postgres-operator"
-        githubPushBranches: /(release\/.*|master)/
+        githubPushBranches = /(release\/.*|master)/
 }

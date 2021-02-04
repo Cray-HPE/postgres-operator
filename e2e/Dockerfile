@@ -2,7 +2,7 @@ FROM ubuntu:18.04
 LABEL maintainer="Team ACID @ Zalando <team-acid@zalando.de>"
 
 COPY manifests ./manifests
-COPY requirements.txt tests ./
+COPY requirements.txt constraints.txt tests ./
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
