@@ -1,0 +1,4 @@
+kubernetes==9.0.0
+timeout_decorator==0.4.1
+PyYAML==5.4.1
+rsa==4.7

@@ -28,7 +28,7 @@ RUN \
     /tmp/* \
     /var/cache/apk/*
 
-COPY requirements.txt /
+COPY requirements.txt constraints.txt /
 COPY start_server.sh /
 RUN pip3 install -r /requirements.txt
 
