@@ -3,7 +3,6 @@ set -e -x
 
 export PATH=$PATH:/usr/local/go/bin
 export PATH=$PATH:/root/go/bin
-rm -rf /usr/local/go
 rm -f go1.14.4.linux-amd64.tar*
 : "${GOPATH:=$HOME/go}"
 
@@ -31,13 +30,7 @@ if [[ "go${GO_VERSION}" !=  $INSTALLED_GO_VERSION ]]; then
     go get golang.org/dl/go$GO_VERSION || true
     $GOPATH/bin/go$GO_VERSION download || true
     GO_EXEC=$(which go)
-    rm -f $GO_EXEC
-    cp $GOPATH/bin/go$GO_VERSION $GO_EXEC
 fi
-
-rm -rf $GOPATH/pkg
-rm -rf $GOPATH/bin
-rm -rf $GOPATH/src
 
 mkdir -p $GOPATH/bin
 mkdir -p $GOPATH/src
@@ -51,12 +44,10 @@ else
 fi
 
 ORIGINAL_DIR=$PWD
-mkdir -p $GOPATH/src/github.com/zalando/postgres-operator
-cp -r . $GOPATH/src/github.com/zalando/postgres-operator
-cd $GOPATH/src/github.com/zalando/postgres-operator
+mkdir -p $GOPATH/src/github.com/zalando/${BINARY}
+cp -r . $GOPATH/src/github.com/zalando/${BINARY}
+cd $GOPATH/src/github.com/zalando/${BINARY}
 
 make deps
 make clean
 make docker
-
-cp -r $GOPATH/src/github.com/zalando/postgres-operator/build $ORIGINAL_DIR

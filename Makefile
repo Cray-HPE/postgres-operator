@@ -1,5 +1,6 @@
 .PHONY: clean local test linux macos docker push scm-source.json e2e
 
+GO_BINARY ?= /home/jenkins/go/bin/go1.14.4
 BINARY ?= postgres-operator
 BUILD_FLAGS ?= -v
 CGO_ENABLED ?= 0
@@ -12,7 +13,7 @@ LOCAL_BUILD_FLAGS ?= $(BUILD_FLAGS)
 LDFLAGS ?= -X=main.version=$(VERSION)
 DOCKERDIR = docker
 
-IMAGE ?= registry.opensource.zalan.do/acid/$(BINARY)
+IMAGE ?= $(BINARY)
 TAG ?= $(VERSION)
 GITHEAD = $(shell git rev-parse --short HEAD)
 GITURL = $(shell git config --get remote.origin.url)
@@ -20,7 +21,7 @@ GITSTATUS = $(shell git status --porcelain || echo "no changes")
 SOURCES = cmd/main.go
 VERSION ?= $(shell git describe --tags --always --dirty)
 DIRS := cmd pkg
-PKG := `go list ./... | grep -v /vendor/`
+PKG := `$(GO_BINARY) list ./... | grep -v /vendor/`
 
 ifeq ($(DEBUG),1)
 	DOCKERFILE = DebugDockerfile
@@ -48,13 +49,13 @@ clean:
 
 local: ${SOURCES}
 	hack/verify-codegen.sh
-	CGO_ENABLED=${CGO_ENABLED} go build -o build/${BINARY} $(LOCAL_BUILD_FLAGS) -ldflags "$(LDFLAGS)" $^
+	CGO_ENABLED=${CGO_ENABLED} $(GO_BINARY) build -o build/${BINARY} $(LOCAL_BUILD_FLAGS) -ldflags "$(LDFLAGS)" $^
 
 linux: ${SOURCES}
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=${CGO_ENABLED} go build -o build/linux/${BINARY} ${BUILD_FLAGS} -ldflags "$(LDFLAGS)" $^
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=${CGO_ENABLED} $(GO_BINARY) build -o build/linux/${BINARY} ${BUILD_FLAGS} -ldflags "$(LDFLAGS)" $^
 
 macos: ${SOURCES}
-	GOOS=darwin GOARCH=amd64 CGO_ENABLED=${CGO_ENABLED} go build -o build/macos/${BINARY} ${BUILD_FLAGS} -ldflags "$(LDFLAGS)" $^
+	GOOS=darwin GOARCH=amd64 CGO_ENABLED=${CGO_ENABLED} $(GO_BINARY) build -o build/macos/${BINARY} ${BUILD_FLAGS} -ldflags "$(LDFLAGS)" $^
 
 docker-context: scm-source.json linux
 	mkdir -p docker/build/
@@ -78,23 +79,23 @@ scm-source.json: .git
 	echo '{\n "url": "git:$(GITURL)",\n "revision": "$(GITHEAD)",\n "author": "$(USER)",\n "status": "$(GITSTATUS)"\n}' > scm-source.json
 
 tools:
-	GO111MODULE=on go get -u honnef.co/go/tools/cmd/staticcheck
-	GO111MODULE=on go get k8s.io/client-go@kubernetes-1.16.3
-	GO111MODULE=on go mod tidy
+	GO111MODULE=on $(GO_BINARY) get -u honnef.co/go/tools/cmd/staticcheck
+	GO111MODULE=on $(GO_BINARY) get k8s.io/client-go@kubernetes-1.16.3
+	GO111MODULE=on $(GO_BINARY) mod tidy
 
 fmt:
 	@gofmt -l -w -s $(DIRS)
 
 vet:
-	@go vet $(PKG)
+	@$(GO_BINARY) vet $(PKG)
 	@staticcheck $(PKG)
 
 deps: tools
-	GO111MODULE=on go mod vendor
+	GO111MODULE=on $(GO_BINARY) mod vendor
 
 test:
 	hack/verify-codegen.sh
-	GO111MODULE=on go test ./...
+	GO111MODULE=on $(GO_BINARY) test ./...
 
 e2e: docker # build operator image to be tested
 	cd e2e; make tools e2etest clean
