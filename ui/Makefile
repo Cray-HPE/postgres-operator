@@ -1,6 +1,6 @@
 .PHONY: clean test appjs docker push mock
 
-IMAGE            ?= registry.opensource.zalan.do/acid/postgres-operator-ui
+IMAGE            ?= postgres-operator-ui
 VERSION          ?= $(shell git describe --tags --always --dirty)
 TAG              ?= $(VERSION)
 GITHEAD          = $(shell git rev-parse --short HEAD)
@@ -21,8 +21,8 @@ test:
 	tox
 
 appjs:
-	docker run $(TTYFLAGS) -u $$(id -u) -v $$(pwd):/workdir -w /workdir/app node:10.1.0-alpine npm install
-	docker run $(TTYFLAGS) -u $$(id -u) -v $$(pwd):/workdir -w /workdir/app node:10.1.0-alpine npm run build
+	docker run $(TTYFLAGS) -u $$(id -u) -v $$(pwd):/workdir -w /workdir/app node:10.1.0-alpine npm install --cache /tmp/empty-cache
+	docker run $(TTYFLAGS) -u $$(id -u) -v $$(pwd):/workdir -w /workdir/app node:10.1.0-alpine npm run build --cache /tmp/empty-cache
 
 docker: appjs
 	echo `(env)`

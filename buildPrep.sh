@@ -45,9 +45,16 @@ fi
 
 ORIGINAL_DIR=$PWD
 mkdir -p $GOPATH/src/github.com/zalando/${BINARY}
-cp -r . $GOPATH/src/github.com/zalando/${BINARY}
-cd $GOPATH/src/github.com/zalando/${BINARY}
+cp -r ./[!\.]* $GOPATH/src/github.com/zalando/${BINARY}
 
-make deps
-make clean
-make docker
+if [ "$BINARY" == "postgres-operator-ui" ]; then
+  cd ui
+  make clean
+  make docker
+else
+  make deps
+  make clean
+  make docker
+fi
+
+cd $GOPATH/src/github.com/zalando/${BINARY}
