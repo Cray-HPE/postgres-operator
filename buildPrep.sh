@@ -3,7 +3,7 @@ set -e -x
 
 export PATH=$PATH:/usr/local/go/bin
 export PATH=$PATH:/root/go/bin
-rm -f go1.14.4.linux-amd64.tar*
+rm -f go1.16.9.linux-amd64.tar*
 : "${GOPATH:=$HOME/go}"
 
 if which git ; then
@@ -18,11 +18,11 @@ if which go ; then
   echo "Go is installed."
 else
   echo "Go wasn't installed, trying to install"
-  wget https://dl.google.com/go/go1.14.4.linux-amd64.tar.gz
-  tar -C /usr/local -xzf go1.14.4.linux-amd64.tar.gz
+  wget https://dl.google.com/go/go1.16.9.linux-amd64.tar.gz
+  tar -C /usr/local -xzf go1.16.9.linux-amd64.tar.gz
 fi
 
-GO_VERSION="1.14.4"
+GO_VERSION="1.16.9"
 INSTALLED_GO_VERSION=$(go version | awk '{print $3}')
 
 if [[ "go${GO_VERSION}" !=  $INSTALLED_GO_VERSION ]]; then
