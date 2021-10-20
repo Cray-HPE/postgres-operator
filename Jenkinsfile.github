@@ -37,7 +37,7 @@ pipeline {
         stage("Publish postgres-operator docker image") {
             steps {
                 script {
-                    publishCsmDockerImage(image: env.OPERATOR_NAME, tag: env.VERSION, isStable: env.IS_STABLE)
+                    publishCsmDockerImage(image: env.OPERATOR_NAME, tag: env.VERSION, isStable: env.IS_STABLE, snykTargetFile: "docker/Dockerfile")
                 }
             }
         }
@@ -45,7 +45,7 @@ pipeline {
         stage("Publish postgres-operator-ui docker image") {
             steps {
                 script {
-                    publishCsmDockerImage(image: env.OPERATOR_UI_NAME, tag: env.VERSION, isStable: env.IS_STABLE)
+                    publishCsmDockerImage(image: env.OPERATOR_UI_NAME, tag: env.VERSION, isStable: env.IS_STABLE, snykTargetFile: "ui/Dockerfile")
                 }
             }
         }
