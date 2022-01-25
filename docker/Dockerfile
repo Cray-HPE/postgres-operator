@@ -1,4 +1,4 @@
-FROM artifactory.algol60.net/docker.io/library/alpine:3.12
+FROM artifactory.algol60.net/docker.io/library/alpine:3
 MAINTAINER Team ACID @ Zalando <team-acid@zalando.de>
 
 # We need root certificates to deal with teams api over https
