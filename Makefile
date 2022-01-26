@@ -1,6 +1,6 @@
 .PHONY: clean local test linux macos docker push scm-source.json e2e
 
-GO_BINARY ?= /home/jenkins/go/bin/go1.16.9
+GO_BINARY ?= /home/jenkins/go/bin/go1.17.6
 BINARY ?= postgres-operator
 BUILD_FLAGS ?= -v
 CGO_ENABLED ?= 0
