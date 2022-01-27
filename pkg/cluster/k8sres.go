@@ -2158,6 +2158,8 @@ func (c *Cluster) generateConnectionPoolerPodTemplate(spec *acidv1.PostgresSpec)
 		Env: envVars,
 	}
 
+	affinity := generatePodAffinity(c.connectionPoolerLabelsSelector().MatchLabels, "kubernetes.io/hostname", nil)
+
 	podTemplate := &v1.PodTemplateSpec{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels:      c.connectionPoolerLabelsSelector().MatchLabels,
@@ -2168,6 +2170,7 @@ func (c *Cluster) generateConnectionPoolerPodTemplate(spec *acidv1.PostgresSpec)
 			ServiceAccountName:            c.OpConfig.PodServiceAccountName,
 			TerminationGracePeriodSeconds: &gracePeriod,
 			Containers:                    []v1.Container{poolerContainer},
+			Affinity: affinity,
 			// TODO: add tolerations to scheduler pooler on the same node
 			// as database
 			//Tolerations:                   *tolerationsSpec,
@@ -2251,6 +2254,11 @@ func (c *Cluster) generateConnectionPoolerDeployment(spec *acidv1.PostgresSpec) 
 		Spec: appsv1.DeploymentSpec{
 			Replicas: numberOfInstances,
 			Selector: c.connectionPoolerLabelsSelector(),
+			Strategy: appsv1.DeploymentStrategy{
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxSurge: &intstr.IntOrString{IntVal: 0},
+				},
+			},
 			Template: *podTemplate,
 		},
 	}
