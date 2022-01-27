@@ -470,7 +470,7 @@ func generateContainer(
 			Command: command,
 		}
 
-		handler := &v1.Handler{
+		handler := &v1.LifecycleHandler{
 			Exec: execAction,
 		}
 
