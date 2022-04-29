@@ -67,7 +67,7 @@ docker: ${DOCKERDIR}/${DOCKERFILE} docker-context
 	echo "Version ${VERSION}"
 	echo "CDP tag ${CDP_TAG}"
 	echo "git describe $(shell git describe --tags --always --dirty)"
-	cd "${DOCKERDIR}" && docker build --rm -t "$(IMAGE):$(TAG)$(CDP_TAG)$(DEBUG_POSTFIX)" -f "${DOCKERFILE}" .
+	cd "${DOCKERDIR}" && docker build --rm --no-cache --pull ${DOCKER_ARGS} -t "$(IMAGE):$(TAG)$(CDP_TAG)$(DEBUG_POSTFIX)" -f "${DOCKERFILE}" .
 
 indocker-race:
 	docker run --rm -v "${GOPATH}":"${GOPATH}" -e GOPATH="${GOPATH}" -e RACE=1 -w ${PWD} golang:1.8.1 bash -c "make linux"
