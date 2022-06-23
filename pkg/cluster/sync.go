@@ -266,10 +266,36 @@ func (c *Cluster) mustUpdatePodsAfterLazyUpdate(desiredSset *appsv1.StatefulSet)
 		return false, fmt.Errorf("could not list pods of the statefulset: %v", err)
 	}
 
+        // iterate through all statefulset containers looking for the one running PostgreSQL.
+        targetSsetContainer := -1
+        for i, cr := range desiredSset.Spec.Template.Spec.Containers {
+                if cr.Name == constants.PostgresContainerName {
+                        targetSsetContainer = i
+                        break
+                }
+        }
+
+        if targetSsetContainer < 0 {
+                return false, fmt.Errorf("could not find %s container in the statefulset", constants.PostgresContainerName)
+        }
+
 	for _, pod := range pods {
 
-		effectivePodImage := pod.Spec.Containers[0].Image
-		ssImage := desiredSset.Spec.Template.Spec.Containers[0].Image
+                // iterate through all pod containers looking for the one running PostgreSQL.
+                targetPodContainer := -1
+                for i, cr := range pod.Spec.Containers {
+                        if cr.Name == constants.PostgresContainerName {
+                                targetPodContainer = i
+                                break
+                        }
+                }
+
+                if targetPodContainer < 0 {
+                        return false, fmt.Errorf("could not find %s container in the pod", constants.PostgresContainerName)
+                }
+
+		effectivePodImage := pod.Spec.Containers[targetPodContainer].Image
+		ssImage := desiredSset.Spec.Template.Spec.Containers[targetSsetContainer].Image
 
 		if ssImage != effectivePodImage {
 			c.logger.Infof("not all pods were re-started when the lazy upgrade was enabled; forcing the rolling upgrade now")
