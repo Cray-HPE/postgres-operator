@@ -26,7 +26,8 @@ set -e -x
 
 export PATH=$PATH:/usr/local/go/bin
 export PATH=$PATH:/root/go/bin
-rm -f go1.17.6.linux-amd64.tar*
+rm -f go1.17.3.linux-amd64.tar*
+#rm -f go1.19.linux-amd64.tar*
 : "${GOPATH:=$HOME/go}"
 
 if which git ; then
@@ -40,12 +41,21 @@ fi
 if which go ; then
   echo "Go is installed."
 else
+# kswj added since wget and docker are not installed by default
+  sudo yum install wget
+  sudo yum install  docker 
+  sudo systemctl enable docker
+  sudo systemctl start docker
+
   echo "Go wasn't installed, trying to install"
-  wget https://dl.google.com/go/go1.17.6.linux-amd64.tar.gz
-  tar -C /usr/local -xzf go1.17.6.linux-amd64.tar.gz
+  wget https://dl.google.com/go/go1.17.3.linux-amd64.tar.gz
+#  wget https://dl.google.com/go/go1.19.linux-amd64.tar.gz
+  tar -C /usr/local -xzf go1.17.3.linux-amd64.tar.gz
+#  tar -C /usr/local -xzf go1.19.linux-amd64.tar.gz
 fi
 
-GO_VERSION="1.17.6"
+GO_VERSION="1.17.3"
+#GO_VERSION="1.19"
 INSTALLED_GO_VERSION=$(go version | awk '{print $3}')
 
 if [[ "go${GO_VERSION}" !=  $INSTALLED_GO_VERSION ]]; then
@@ -63,8 +73,21 @@ if which dep; then
   echo "dep is installed."
 else
   echo "dep wasn't installed, trying to install"
-  curl https://raw.githubusercontent.com/golang/dep/master/install.sh | DEP_RELEASE_TAG=v0.5.0 sh
+#  curl https://raw.githubusercontent.com/golang/dep/master/install.sh | DEP_RELEASE_TAG=v0.5.0 sh
+#  curl https://raw.githubusercontent.com/golang/dep/master/install.sh | DEP_RELEASE_TAG=v0.5.4 sh
 fi
+
+# kswj added since clock was deprecated in v0.24 and v0.25.0 is latest
+#/usr/local/go/bin/go get -v k8s.io/apimachinery/pkg/util/clock@v0.22.4
+#/usr/local/go/bin/go get -v -d k8s.io/apimachinery@v0.22.4
+#/usr/local/go/bin/go get -v k8s.io/utils/clock@latest
+
+# These made not difference toward the gnostic namespace conflict
+#/usr/local/go/bin/go get -v -d k8s.io/code-generator@v0.22.4
+#/usr/local/go/bin/go get -v -d github.com/aws/aws-sdk-go@v1.42.18
+#/usr/local/go/bin/go get -v -d github.com/lib/pq@v1.10.4
+#/usr/local/go/bin/go get -v -d github.com/sirupsen/logrus@v1.8.1
+#/usr/local/go/bin/go get -v -d github.com/stretchr/testify@v1.7.0
 
 ORIGINAL_DIR=$PWD
 mkdir -p $GOPATH/src/github.com/zalando/${BINARY}

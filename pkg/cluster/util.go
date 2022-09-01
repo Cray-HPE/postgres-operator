@@ -6,7 +6,7 @@ import (
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"net/http"
 	"reflect"
 	"sort"
 	"strings"
@@ -18,12 +18,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/sirupsen/logrus"
 	acidzalando "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do"
 	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
 	"github.com/zalando/postgres-operator/pkg/spec"
 	"github.com/zalando/postgres-operator/pkg/util"
 	"github.com/zalando/postgres-operator/pkg/util/constants"
 	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/pkg/util/nicediff"
 	"github.com/zalando/postgres-operator/pkg/util/retryutil"
 )
 
@@ -166,49 +168,77 @@ func (c *Cluster) logPDBChanges(old, new *policybeta1.PodDisruptionBudget, isUpd
 		)
 	}
 
-	c.logger.Debugf("diff\n%s\n", util.PrettyDiff(old.Spec, new.Spec))
+	logNiceDiff(c.logger, old.Spec, new.Spec)
+}
+
+func logNiceDiff(log *logrus.Entry, old, new interface{}) {
+	o, erro := json.MarshalIndent(old, "", "  ")
+	n, errn := json.MarshalIndent(new, "", "  ")
+
+	if erro != nil || errn != nil {
+		panic("could not marshal API objects, should not happen")
+	}
+
+	nice := nicediff.Diff(string(o), string(n), true)
+	for _, s := range strings.Split(nice, "\n") {
+		// " is not needed in the value to understand
+		log.Debugf(strings.ReplaceAll(s, "\"", ""))
+	}
 }
 
 func (c *Cluster) logStatefulSetChanges(old, new *appsv1.StatefulSet, isUpdate bool, reasons []string) {
 	if isUpdate {
-		c.logger.Infof("statefulset %q has been changed", util.NameFromMeta(old.ObjectMeta))
+		c.logger.Infof("statefulset %s has been changed", util.NameFromMeta(old.ObjectMeta))
 	} else {
-		c.logger.Infof("statefulset %q is not in the desired state and needs to be updated",
+		c.logger.Infof("statefulset %s is not in the desired state and needs to be updated",
 			util.NameFromMeta(old.ObjectMeta),
 		)
 	}
+
+	logNiceDiff(c.logger, old.Spec, new.Spec)
+
 	if !reflect.DeepEqual(old.Annotations, new.Annotations) {
-		c.logger.Debugf("metadata.annotation diff\n%s\n", util.PrettyDiff(old.Annotations, new.Annotations))
+		c.logger.Debugf("metadata.annotation are different")
+		logNiceDiff(c.logger, old.Annotations, new.Annotations)
 	}
-	c.logger.Debugf("spec diff between old and new statefulsets: \n%s\n", util.PrettyDiff(old.Spec, new.Spec))
 
 	if len(reasons) > 0 {
 		for _, reason := range reasons {
-			c.logger.Infof("reason: %q", reason)
+			c.logger.Infof("reason: %s", reason)
 		}
 	}
 }
 
 func (c *Cluster) logServiceChanges(role PostgresRole, old, new *v1.Service, isUpdate bool, reason string) {
 	if isUpdate {
-		c.logger.Infof("%s service %q has been changed",
+		c.logger.Infof("%s service %s has been changed",
 			role, util.NameFromMeta(old.ObjectMeta),
 		)
 	} else {
-		c.logger.Infof("%s service %q is not in the desired state and needs to be updated",
+		c.logger.Infof("%s service %s is not in the desired state and needs to be updated",
 			role, util.NameFromMeta(old.ObjectMeta),
 		)
 	}
-	c.logger.Debugf("diff\n%s\n", util.PrettyDiff(old.Spec, new.Spec))
+
+	logNiceDiff(c.logger, old.Spec, new.Spec)
 
 	if reason != "" {
 		c.logger.Infof("reason: %s", reason)
 	}
 }
 
-func (c *Cluster) logVolumeChanges(old, new acidv1.Volume) {
-	c.logger.Infof("volume specification has been changed")
-	c.logger.Debugf("diff\n%s\n", util.PrettyDiff(old, new))
+func getPostgresContainer(podSpec *v1.PodSpec) (pgContainer v1.Container) {
+	for _, container := range podSpec.Containers {
+		if container.Name == constants.PostgresContainerName {
+			pgContainer = container
+		}
+	}
+
+	// if no postgres container was found, take the first one in the podSpec
+	if reflect.DeepEqual(pgContainer, v1.Container{}) && len(podSpec.Containers) > 0 {
+		pgContainer = podSpec.Containers[0]
+	}
+	return pgContainer
 }
 
 func (c *Cluster) getTeamMembers(teamID string) ([]string, error) {
@@ -217,27 +247,76 @@ func (c *Cluster) getTeamMembers(teamID string) ([]string, error) {
 		return nil, fmt.Errorf("no teamId specified")
 	}
 
+	members := []string{}
+
+	if c.OpConfig.EnablePostgresTeamCRD && c.Config.PgTeamMap != nil {
+		c.logger.Debugf("fetching possible additional team members for team %q", teamID)
+		additionalMembers := []string{}
+
+		for team, membership := range *c.Config.PgTeamMap {
+			if team == teamID {
+				additionalMembers = membership.AdditionalMembers
+				c.logger.Debugf("found %d additional members for team %q", len(additionalMembers), teamID)
+			}
+		}
+
+		members = append(members, additionalMembers...)
+	}
+
 	if !c.OpConfig.EnableTeamsAPI {
-		c.logger.Debugf("team API is disabled, returning empty list of members for team %q", teamID)
-		return []string{}, nil
+		c.logger.Debugf("team API is disabled")
+		return members, nil
 	}
 
 	token, err := c.oauthTokenGetter.getOAuthToken()
 	if err != nil {
-		c.logger.Warnf("could not get oauth token to authenticate to team service API, returning empty list of team members: %v", err)
-		return []string{}, nil
+		return nil, fmt.Errorf("could not get oauth token to authenticate to team service API: %v", err)
 	}
 
-	teamInfo, err := c.teamsAPIClient.TeamInfo(teamID, token)
+	teamInfo, statusCode, err := c.teamsAPIClient.TeamInfo(teamID, token)
+
 	if err != nil {
-		c.logger.Warnf("could not get team info for team %q, returning empty list of team members: %v", teamID, err)
-		return []string{}, nil
+		if statusCode == http.StatusNotFound {
+			c.logger.Warningf("could not get team info for team %q: %v", teamID, err)
+		} else {
+			return nil, fmt.Errorf("could not get team info for team %q: %v", teamID, err)
+		}
+	} else {
+		for _, member := range teamInfo.Members {
+			if !(util.SliceContains(members, member)) {
+				members = append(members, member)
+			}
+		}
 	}
-
-	return teamInfo.Members, nil
+	return members, nil
 }
 
-func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopChan chan struct{}, role *PostgresRole) (*v1.Pod, error) {
+// Returns annotations to be passed to child objects
+func (c *Cluster) annotationsSet(annotations map[string]string) map[string]string {
+
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+
+	pgCRDAnnotations := c.ObjectMeta.Annotations
+
+	// allow to inherit certain labels from the 'postgres' object
+	for k, v := range pgCRDAnnotations {
+		for _, match := range c.OpConfig.InheritedAnnotations {
+			if k == match {
+				annotations[k] = v
+			}
+		}
+	}
+
+	if len(annotations) > 0 {
+		return annotations
+	}
+
+	return nil
+}
+
+func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopCh chan struct{}, role *PostgresRole) (*v1.Pod, error) {
 	timeout := time.After(c.OpConfig.PodLabelWaitTimeout)
 	for {
 		select {
@@ -253,7 +332,7 @@ func (c *Cluster) waitForPodLabel(podEvents chan PodEvent, stopChan chan struct{
 			}
 		case <-timeout:
 			return nil, fmt.Errorf("pod label wait timeout")
-		case <-stopChan:
+		case <-stopCh:
 			return nil, fmt.Errorf("pod label wait cancelled")
 		}
 	}
@@ -415,28 +494,6 @@ func (c *Cluster) labelsSelector() *metav1.LabelSelector {
 	}
 }
 
-// Return connection pooler labels selector, which should from one point of view
-// inherit most of the labels from the cluster itself, but at the same time
-// have e.g. different `application` label, so that recreatePod operation will
-// not interfere with it (it lists all the pods via labels, and if there would
-// be no difference, it will recreate also pooler pods).
-func (c *Cluster) connectionPoolerLabelsSelector() *metav1.LabelSelector {
-	connectionPoolerLabels := labels.Set(map[string]string{})
-
-	extraLabels := labels.Set(map[string]string{
-		"connection-pooler": c.connectionPoolerName(),
-		"application":       "db-connection-pooler",
-	})
-
-	connectionPoolerLabels = labels.Merge(connectionPoolerLabels, c.labelsSet(false))
-	connectionPoolerLabels = labels.Merge(connectionPoolerLabels, extraLabels)
-
-	return &metav1.LabelSelector{
-		MatchLabels:      connectionPoolerLabels,
-		MatchExpressions: nil,
-	}
-}
-
 func (c *Cluster) roleLabelsSet(shouldAddExtraLabels bool, role PostgresRole) labels.Set {
 	lbls := c.labelsSet(shouldAddExtraLabels)
 	lbls[c.OpConfig.PodRoleLabel] = string(role)
@@ -470,10 +527,6 @@ func (c *Cluster) credentialSecretNameForCluster(username string, clusterName st
 		"cluster", clusterName,
 		"tprkind", acidv1.PostgresCRDResourceKind,
 		"tprgroup", acidzalando.GroupName)
-}
-
-func masterCandidate(replicas []spec.NamespacedName) spec.NamespacedName {
-	return replicas[rand.Intn(len(replicas))]
 }
 
 func cloneSpec(from *acidv1.Postgresql) (*acidv1.Postgresql, error) {
@@ -519,18 +572,6 @@ func (c *Cluster) patroniKubernetesUseConfigMaps() bool {
 	return c.OpConfig.KubernetesUseConfigMaps
 }
 
-func (c *Cluster) needConnectionPoolerWorker(spec *acidv1.PostgresSpec) bool {
-	if spec.EnableConnectionPooler == nil {
-		return spec.ConnectionPooler != nil
-	} else {
-		return *spec.EnableConnectionPooler
-	}
-}
-
-func (c *Cluster) needConnectionPooler() bool {
-	return c.needConnectionPoolerWorker(&c.Spec)
-}
-
 // Earlier arguments take priority
 func mergeContainers(containers ...[]v1.Container) ([]v1.Container, []string) {
 	containerNameTaken := map[string]bool{}
@@ -548,4 +589,25 @@ func mergeContainers(containers ...[]v1.Container) ([]v1.Container, []string) {
 		}
 	}
 	return result, conflicts
+}
+
+func trimCronjobName(name string) string {
+	maxLength := 52
+	if len(name) > maxLength {
+		name = name[0:maxLength]
+		name = strings.TrimRight(name, "-")
+	}
+	return name
+}
+
+func parseResourceRequirements(resourcesRequirement v1.ResourceRequirements) (acidv1.Resources, error) {
+	var resources acidv1.Resources
+	resourcesJSON, err := json.Marshal(resourcesRequirement)
+	if err != nil {
+		return acidv1.Resources{}, fmt.Errorf("could not marshal K8s resources requirements")
+	}
+	if err = json.Unmarshal(resourcesJSON, &resources); err != nil {
+		return acidv1.Resources{}, fmt.Errorf("could not unmarshal K8s resources requirements into acidv1.Resources struct")
+	}
+	return resources, nil
 }

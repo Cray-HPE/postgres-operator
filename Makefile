@@ -1,6 +1,8 @@
-.PHONY: clean local test linux macos docker push scm-source.json e2e
+.PHONY: clean local test linux macos mocks docker push scm-source.json e2e
 
-GO_BINARY ?= /home/jenkins/go/bin/go1.17.6
+#kswj - temp to build locally
+#GO_BINARY ?= /home/jenkins/go/bin/go1.17.6
+GO_BINARY ?= /usr/local/go/bin/go
 BINARY ?= postgres-operator
 BUILD_FLAGS ?= -v
 CGO_ENABLED ?= 0
@@ -25,10 +27,14 @@ PKG := `$(GO_BINARY) list ./... | grep -v /vendor/`
 
 ifeq ($(DEBUG),1)
 	DOCKERFILE = DebugDockerfile
-	DEBUG_POSTFIX := -debug
+	DEBUG_POSTFIX := -debug-$(shell date hhmmss)
 	BUILD_FLAGS += -gcflags "-N -l"
 else
 	DOCKERFILE = Dockerfile
+endif
+
+ifeq ($(FRESH),1)
+  DEBUG_FRESH=$(shell date +"%H-%M-%S")
 endif
 
 ifdef CDP_PULL_REQUEST_NUMBER
@@ -67,10 +73,12 @@ docker: ${DOCKERDIR}/${DOCKERFILE} docker-context
 	echo "Version ${VERSION}"
 	echo "CDP tag ${CDP_TAG}"
 	echo "git describe $(shell git describe --tags --always --dirty)"
-	cd "${DOCKERDIR}" && docker build --rm --no-cache --pull ${DOCKER_ARGS} -t "$(IMAGE):$(TAG)$(CDP_TAG)$(DEBUG_POSTFIX)" -f "${DOCKERFILE}" .
+	cd "${DOCKERDIR}" && docker build --rm -t "$(IMAGE):$(TAG)$(CDP_TAG)$(DEBUG_FRESH)$(DEBUG_POSTFIX)" -f "${DOCKERFILE}" .
 
 indocker-race:
-	docker run --rm -v "${GOPATH}":"${GOPATH}" -e GOPATH="${GOPATH}" -e RACE=1 -w ${PWD} golang:1.8.1 bash -c "make linux"
+# kswj changed from 1.17.3 to 1.18
+	docker run --rm -v "${GOPATH}":"${GOPATH}" -e GOPATH="${GOPATH}" -e RACE=1 -w ${PWD} golang:1.17.3 bash -c "make linux"
+#	docker run --rm -v "${GOPATH}":"${GOPATH}" -e GOPATH="${GOPATH}" -e RACE=1 -w ${PWD} golang:1.19 bash -c "make linux"
 
 push:
 	docker push "$(IMAGE):$(TAG)$(CDP_TAG)"
@@ -78,10 +86,19 @@ push:
 scm-source.json: .git
 	echo '{\n "url": "git:$(GITURL)",\n "revision": "$(GITHEAD)",\n "author": "$(USER)",\n "status": "$(GITSTATUS)"\n}' > scm-source.json
 
+mocks:
+	GO111MODULE=on go generate ./...
+
 tools:
-	GO111MODULE=on $(GO_BINARY) get -u honnef.co/go/tools/cmd/staticcheck
-	GO111MODULE=on $(GO_BINARY) get k8s.io/client-go@kubernetes-1.16.3
-	GO111MODULE=on $(GO_BINARY) mod tidy
+#kswj - temp to build locally - pkg/cluster/k8sres.go:596:15: undefined: "k8s.io/api/core/v1".LifecycleHandler
+#	GO111MODULE=on go get -d k8s.io/client-go@kubernetes-1.22.4
+# current cray
+#	GO111MODULE=on go get k8s.io/client-go@kubernetes-1.16.3
+	GO111MODULE=on go get -d k8s.io/client-go@kubernetes-1.22.4
+	GO111MODULE=on go install github.com/golang/mock/mockgen@v1.6.0
+#	GO111MODULE=on go get github.com/googleapis/gnostic@none
+
+	GO111MODULE=on go mod tidy
 
 fmt:
 	@gofmt -l -w -s $(DIRS)
@@ -97,5 +114,8 @@ test:
 	hack/verify-codegen.sh
 	GO111MODULE=on $(GO_BINARY) test ./...
 
+codegen:
+	hack/update-codegen.sh
+
 e2e: docker # build operator image to be tested
-	cd e2e; make tools e2etest clean
+	cd e2e; make e2etest

@@ -42,17 +42,25 @@ const (
 	PGSyncUserAdd = iota
 	PGsyncUserAlter
 	PGSyncAlterSet // handle ALTER ROLE SET parameter = value
+	PGSyncUserRename
 )
 
 // PgUser contains information about a single user.
 type PgUser struct {
 	Origin     RoleOrigin        `yaml:"-"`
 	Name       string            `yaml:"-"`
+	Namespace  string            `yaml:"-"`
 	Password   string            `yaml:"-"`
 	Flags      []string          `yaml:"user_flags"`
 	MemberOf   []string          `yaml:"inrole"`
 	Parameters map[string]string `yaml:"db_parameters"`
 	AdminRole  string            `yaml:"admin_role"`
+	IsDbOwner  bool              `yaml:"is_db_owner"`
+	Deleted    bool              `yaml:"deleted"`
+}
+
+func (user *PgUser) Valid() bool {
+	return user.Name != "" && user.Password != ""
 }
 
 // PgUserMap maps user names to the definitions.
@@ -110,6 +118,9 @@ type ControllerConfig struct {
 	CRDReadyWaitTimeout  time.Duration
 	ConfigMapName        NamespacedName
 	Namespace            string
+	IgnoredAnnotations   []string
+
+	EnableJsonLogging bool
 }
 
 // cached value for the GetOperatorNamespace

@@ -5,7 +5,7 @@ Learn how to work with the Postgres Operator in a Kubernetes (K8s) environment.
 ## Create a manifest for a new PostgreSQL cluster
 
 Make sure you have [set up](quickstart.md) the operator. Then you can create a
-new Postgres cluster by applying manifest like this [minimal example](../manifests/minimal-postgres-manifest.yaml):
+new Postgres cluster by applying manifest like this [minimal example](https://github.com/zalando/postgres-operator/blob/master/manifests/minimal-postgres-manifest.yaml):
 
 ```yaml
 apiVersion: "acid.zalan.do/v1"
@@ -30,7 +30,7 @@ spec:
   databases:
     foo: zalando
   postgresql:
-    version: "12"
+    version: "14"
 ```
 
 Once you cloned the Postgres Operator [repository](https://github.com/zalando/postgres-operator)
@@ -49,7 +49,7 @@ Note, that the name of the cluster must start with the `teamId` and `-`. At
 Zalando we use team IDs (nicknames) to lower the chance of duplicate cluster
 names and colliding entities. The team ID would also be used to query an API to
 get all members of a team and create [database roles](#teams-api-roles) for
-them.
+them. Besides, the maximum cluster name length is 53 characters.
 
 ## Watch pods being created
 
@@ -71,26 +71,46 @@ kubectl describe postgresql acid-minimal-cluster
 ## Connect to PostgreSQL
 
 With a `port-forward` on one of the database pods (e.g. the master) you can
-connect to the PostgreSQL database. Use labels to filter for the master pod of
-our test cluster.
+connect to the PostgreSQL database from your machine. Use labels to filter for
+the master pod of our test cluster.
 
 ```bash
 # get name of master pod of acid-minimal-cluster
-export PGMASTER=$(kubectl get pods -o jsonpath={.items..metadata.name} -l application=spilo,cluster-name=acid-minimal-cluster,spilo-role=master)
+export PGMASTER=$(kubectl get pods -o jsonpath={.items..metadata.name} -l application=spilo,cluster-name=acid-minimal-cluster,spilo-role=master -n default)
 
 # set up port forward
-kubectl port-forward $PGMASTER 6432:5432
+kubectl port-forward $PGMASTER 6432:5432 -n default
 ```
 
-Open another CLI and connect to the database. Use the generated secret of the
-`postgres` robot user to connect to our `acid-minimal-cluster` master running
-in Minikube. As non-encrypted connections are rejected by default set the SSL
-mode to require:
+Open another CLI and connect to the database using e.g. the psql client.
+When connecting with a manifest role like `foo_user` user, read its password
+from the K8s secret which was generated when creating `acid-minimal-cluster`.
+As non-encrypted connections are rejected by default set SSL mode to `require`:
 
 ```bash
-export PGPASSWORD=$(kubectl get secret postgres.acid-minimal-cluster.credentials -o 'jsonpath={.data.password}' | base64 -d)
+export PGPASSWORD=$(kubectl get secret postgres.acid-minimal-cluster.credentials.postgresql.acid.zalan.do -o 'jsonpath={.data.password}' | base64 -d)
 export PGSSLMODE=require
-psql -U postgres -p 6432
+psql -U postgres -h localhost -p 6432
+```
+
+## Password encryption
+
+Passwords are encrypted with `md5` hash generation by default. However, it is
+possible to use the more recent `scram-sha-256` method by changing the
+`password_encryption` parameter in the Postgres config. You can define it
+directly from the cluster manifest:
+
+```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: postgresql
+metadata:
+  name: acid-minimal-cluster
+spec:
+  [...]
+  postgresql:
+    version: "14"
+    parameters:
+      password_encryption: scram-sha-256
 ```
 
 ## Defining database roles in the operator
@@ -113,7 +133,7 @@ chapter.
 ### Manifest roles
 
 Manifest roles are defined directly in the cluster manifest. See
-[minimal postgres manifest](../manifests/minimal-postgres-manifest.yaml)
+[minimal postgres manifest](https://github.com/zalando/postgres-operator/blob/master/manifests/minimal-postgres-manifest.yaml)
 for an example of `zalando` role, defined with `superuser` and `createdb` flags.
 
 Manifest roles are defined as a dictionary, with a role name as a key and a
@@ -139,6 +159,30 @@ secret, without ever sharing it outside of the cluster.
 At the moment it is not possible to define membership of the manifest role in
 other roles.
 
+To define the secrets for the users in a different namespace than that of the
+cluster, one can set `enable_cross_namespace_secret` and declare the namespace
+for the secrets in the manifest in the following manner (note, that it has to
+be reflected in the `database` section, too),
+
+```yaml
+spec:
+  users:
+    # users with secret in different namespace
+    appspace.db_user:
+    - createdb
+  databases:
+    # namespace notation is part of user name
+    app_db: appspace.db_user
+```
+
+Here, anything before the first dot is considered the namespace and the text after
+the first dot is the username. Also, the postgres roles of these usernames would
+be in the form of `namespace.username`.
+
+For such usernames, the secret is created in the given namespace and its name is
+of the following form,
+`{namespace}.{username}.{team}-{clustername}.credentials.postgresql.acid.zalan.do`
+
 ### Infrastructure roles
 
 An infrastructure role is a role that should be present on every PostgreSQL
@@ -150,23 +194,62 @@ user. There are two ways to define them:
 
 #### Infrastructure roles secret
 
-The infrastructure roles secret is specified by the `infrastructure_roles_secret_name`
-parameter. The role definition looks like this (values are base64 encoded):
+Infrastructure roles can be specified by the `infrastructure_roles_secrets`
+parameter where you can reference multiple existing secrets. Prior to `v1.6.0`
+the operator could only reference one secret with the
+`infrastructure_roles_secret_name` option. However, this secret could contain
+multiple roles using the same set of keys plus incrementing index.
 
 ```yaml
-user1: ZGJ1c2Vy
-password1: c2VjcmV0
-inrole1: b3BlcmF0b3I=
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgresql-infrastructure-roles
+data:
+  user1: ZGJ1c2Vy
+  password1: c2VjcmV0
+  inrole1: b3BlcmF0b3I=
+  user2: ...
 ```
 
 The block above describes the infrastructure role 'dbuser' with password
-'secret' that is a member of the 'operator' role. For the following definitions
-one must increase the index, i.e. the next role will be defined as 'user2' and
-so on. The resulting role will automatically be a login role.
+'secret' that is a member of the 'operator' role. The resulting role will
+automatically be a login role.
 
-Note that with definitions that solely use the infrastructure roles secret
-there is no way to specify role options (like superuser or nologin) or role
-memberships. This is where the ConfigMap comes into play.
+With the new option users can configure the names of secret keys that contain
+the user name, password etc. The secret itself is referenced by the
+`secretname` key. If the secret uses a template for multiple roles as described
+above list them separately.
+
+```yaml
+apiVersion: v1
+kind: OperatorConfiguration
+metadata:
+  name: postgresql-operator-configuration
+configuration:
+  kubernetes:
+    infrastructure_roles_secrets:
+    - secretname: "postgresql-infrastructure-roles"
+      userkey: "user1"
+      passwordkey: "password1"
+      rolekey: "inrole1"
+    - secretname: "postgresql-infrastructure-roles"
+      userkey: "user2"
+      ...
+```
+
+Note, only the CRD-based configuration allows for referencing multiple secrets.
+As of now, the ConfigMap is restricted to either one or the existing template
+option with `infrastructure_roles_secret_name`. Please, refer to the example
+manifests to understand how `infrastructure_roles_secrets` has to be configured
+for the [configmap](https://github.com/zalando/postgres-operator/blob/master/manifests/configmap.yaml) or [CRD configuration](https://github.com/zalando/postgres-operator/blob/master/manifests/postgresql-operator-default-configuration.yaml).
+
+If both `infrastructure_roles_secret_name` and `infrastructure_roles_secrets`
+are defined the operator will create roles for both of them. So make sure,
+they do not collide. Note also, that with definitions that solely use the
+infrastructure roles secret there is no way to specify role options (like
+superuser or nologin) or role memberships. This is where the additional
+ConfigMap comes into play.
 
 #### Secret plus ConfigMap
 
@@ -204,8 +287,8 @@ Since an infrastructure role is created uniformly on all clusters managed by
 the operator, it makes no sense to define it without the password. Such
 definitions will be ignored with a prior warning.
 
-See [infrastructure roles secret](../manifests/infrastructure-roles.yaml)
-and [infrastructure roles configmap](../manifests/infrastructure-roles-configmap.yaml)
+See [infrastructure roles secret](https://github.com/zalando/postgres-operator/blob/master/manifests/infrastructure-roles.yaml)
+and [infrastructure roles configmap](https://github.com/zalando/postgres-operator/blob/master/manifests/infrastructure-roles-configmap.yaml)
 for the examples.
 
 ### Teams API roles
@@ -221,7 +304,7 @@ returns usernames. A minimal Teams API should work like this:
 /.../<teamname> -> ["name","anothername"]
 ```
 
-A ["fake" Teams API](../manifests/fake-teams-api.yaml) deployment is provided
+A ["fake" Teams API](https://github.com/zalando/postgres-operator/blob/master/manifests/fake-teams-api.yaml) deployment is provided
 in the manifests folder to set up a basic API around whatever services is used
 for user management. The Teams API's URL is set in the operator's
 [configuration](reference/operator_parameters.md#automatic-creation-of-human-users-in-the-database)
@@ -229,6 +312,161 @@ and `enable_teams_api` must be set to `true`. There are more settings available
 to choose superusers, group roles, [PAM configuration](https://github.com/CyberDem0n/pam-oauth2)
 etc. An OAuth2 token can be passed to the Teams API via a secret. The name for
 this secret is configurable with the `oauth_token_secret_name` parameter.
+
+### Additional teams and members per cluster
+
+Postgres clusters are associated with one team by providing the `teamID` in
+the manifest. Additional superuser teams can be configured as mentioned in
+the previous paragraph. However, this is a global setting. To assign
+additional teams, superuser teams and single users to clusters of a given
+team, use the [PostgresTeam CRD](https://github.com/zalando/postgres-operator/blob/master/manifests/postgresteam.crd.yaml).
+
+Note, by default the `PostgresTeam` support is disabled in the configuration.
+Switch `enable_postgres_team_crd` flag to `true` and the operator will start to
+watch for this CRD. Make sure, the cluster role is up to date and contains a
+section for [PostgresTeam](https://github.com/zalando/postgres-operator/blob/master/manifests/operator-service-account-rbac.yaml#L30).
+
+#### Additional teams
+
+To assign additional teams and single users to clusters of a given team,
+define a mapping with the `PostgresTeam` Kubernetes resource. The Postgres
+Operator will read such team mappings each time it syncs all Postgres clusters.
+
+```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: PostgresTeam
+metadata:
+  name: custom-team-membership
+spec:
+  additionalTeams:
+    a-team:
+    - "b-team"
+```
+
+With the example above the operator will create login roles for all members
+of `b-team` in every cluster owned by `a-team`. It's possible to do vice versa
+for clusters of `b-team` in one manifest:
+
+```yaml
+spec:
+  additionalTeams:
+    a-team:
+    - "b-team"
+    b-team:
+    - "a-team"
+```
+
+You see, the `PostgresTeam` CRD is a global team mapping and independent from
+the Postgres manifests. It is possible to define multiple mappings, even with
+redundant content - the Postgres operator will create one internal cache from
+it. Additional teams are resolved transitively, meaning you will also add
+users for their `additionalTeams`, e.g.:
+
+```yaml
+spec:
+  additionalTeams:
+    a-team:
+    - "b-team"
+    - "c-team"
+    b-team:
+    - "a-team"
+```
+
+This creates roles for members of the `c-team` team not only in all clusters
+owned by `a-team`, but as well in cluster owned by `b-team`, as `a-team` is
+an `additionalTeam` to `b-team`
+
+Not, you can also define `additionalSuperuserTeams` in the `PostgresTeam`
+manifest. By default, this option is disabled and must be configured with
+`enable_postgres_team_crd_superusers` to make it work.
+
+#### Virtual teams
+
+There can be "virtual teams" that do not exist in the Teams API. It can make
+it easier to map a group of teams to many other teams:
+
+```yaml
+spec:
+  additionalTeams:
+    a-team:
+    - "virtual-team"
+    b-team:
+    - "virtual-team"
+    virtual-team:
+    - "c-team"
+    - "d-team"
+```
+
+This example would create roles for members of `c-team` and `d-team` plus
+additional `virtual-team` members in clusters owned by `a-team` or `b-team`.
+
+#### Teams changing their names
+
+With `PostgresTeams` it is also easy to cover team name changes. Just add
+the mapping between old and new team name and the rest can stay the same.
+E.g. if team `a-team`'s name would change to `f-team` in the teams API it
+could be reflected in a `PostgresTeam` mapping with just two lines:
+
+```yaml
+spec:
+  additionalTeams:
+    a-team:
+    - "f-team"
+```
+
+This is helpful, because Postgres cluster names are immutable and can not
+be changed. Only via cloning it could get a different name starting with the
+new `teamID`.
+
+#### Additional members
+
+Single members might be excluded from teams although they continue to work
+with the same people. However, the teams API would not reflect this anymore.
+To still add a database role for former team members list their role under
+the `additionalMembers` section of the `PostgresTeam` resource:
+
+```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: PostgresTeam
+metadata:
+  name: custom-team-membership
+spec:
+  additionalMembers:
+    a-team:
+    - "tia"
+```
+
+This will create the login role `tia` in every cluster owned by `a-team`.
+The user can connect to databases like the other team members.
+
+The `additionalMembers` map can also be used to define users of virtual
+teams, e.g. for `virtual-team` we used above:
+
+```yaml
+spec:
+  additionalMembers:
+    virtual-team:
+    - "flynch"
+    - "rdecker"
+    - "briggs"
+```
+
+#### Removed members
+
+The Postgres Operator does not delete database roles when users are removed
+from manifests. But, using the `PostgresTeam` custom resource or Teams API it
+is very easy to add roles to many clusters. Manually reverting such a change
+is cumbersome. Therefore, if members are removed from a `PostgresTeam` or the
+Teams API the operator can rename roles appending a configured suffix to the
+name (see `role_deletion_suffix` option) and revoke the `LOGIN` privilege.
+The suffix makes it easy then for a cleanup script to remove those deprecated
+roles completely. Switch `enable_team_member_deprecation` to `true` to enable
+this behavior.
+
+When a role is re-added to a `PostgresTeam` manifest (or to the source behind
+the Teams API) the operator will check for roles with the configured suffix
+and if found, rename the role back to the original name and grant `LOGIN`
+again.
 
 ## Prepared databases with roles and default privileges
 
@@ -307,9 +545,10 @@ Then, the schemas are owned by the database owner, too.
 
 The roles described in the previous paragraph can be granted to LOGIN roles from
 the `users` section in the manifest. Optionally, the Postgres Operator can also
-create default LOGIN roles for the database an each schema individually. These
+create default LOGIN roles for the database and each schema individually. These
 roles will get the `_user` suffix and they inherit all rights from their NOLOGIN
-counterparts.
+counterparts. Therefore, you cannot have `defaultRoles` set to `false` and enable
+`defaultUsers` at the same time.
 
 | Role name           | Member of      | Admin         |
 | ------------------- | -------------- | ------------- |
@@ -332,6 +571,43 @@ spec:
           defaultUsers: true
 ```
 
+Default access privileges are also defined for LOGIN roles on database and
+schema creation. This means they are currently not set when `defaultUsers`
+(or `defaultRoles` for schemas) are enabled at a later point in time.
+
+For all LOGIN roles the operator will create K8s secrets in the namespace
+specified in `secretNamespace`, if `enable_cross_namespace_secret` is set to
+`true` in the config. Otherwise, they are created in the same namespace like
+the Postgres cluster. Unlike roles specified with `namespace.username` under
+`users`, the namespace will not be part of the role name here.
+
+```yaml
+spec:
+  preparedDatabases:
+    foo:
+      defaultUsers: true
+      secretNamespace: appspace
+```
+
+### Schema `search_path` for default roles
+
+The schema [`search_path`](https://www.postgresql.org/docs/13/ddl-schemas.html#DDL-SCHEMAS-PATH)
+for each role will include the role name and the schemas, this role should have
+access to. So `foo_bar_writer` does not have to schema-qualify tables from
+schemas `foo_bar_writer, bar`, while `foo_writer` can look up `foo_writer` and
+any schema listed under `schemas`. To register the default `public` schema in
+the `search_path` (because some extensions are installed there) one has to add
+the following (assuming no extra roles are desired only for the public schema):
+
+```yaml
+spec:
+  preparedDatabases:
+    foo:
+      schemas:
+        public:
+          defaultRoles: false
+```
+
 ### Database extensions
 
 Prepared databases also allow for creating Postgres extensions. They will be
@@ -347,10 +623,9 @@ spec:
 ```
 
 Some extensions require SUPERUSER rights on creation unless they are not
-whitelisted by the [pgextwlist](https://github.com/dimitri/pgextwlist)
-extension, that is shipped with the Spilo image. To see which extensions are
-on the list check the `extwlist.extension` parameter in the postgresql.conf
-file.
+allowed by the [pgextwlist](https://github.com/dimitri/pgextwlist) extension,
+that is shipped with the Spilo image. To see which extensions are on the list
+check the `extwlist.extension` parameter in the postgresql.conf file.
 
 ```bash
 SHOW extwlist.extensions;
@@ -412,11 +687,13 @@ manifest the operator will raise the limits to the configured minimum values.
 If no resources are defined in the manifest they will be obtained from the
 configured [default requests](reference/operator_parameters.md#kubernetes-resource-requests).
 
-## Use taints and tolerations for dedicated PostgreSQL nodes
+## Use taints, tolerations and node affinity for dedicated PostgreSQL nodes
 
 To ensure Postgres pods are running on nodes without any other application pods,
 you can use [taints and tolerations](https://kubernetes.io/docs/concepts/configuration/taint-and-toleration/)
-and configure the required toleration in the manifest.
+and configure the required toleration in the manifest. Tolerations can also be
+defined in the [operator config](administrator.md#use-taints-and-tolerations-for-dedicated-postgresql-nodes)
+to apply for all Postgres clusters.
 
 ```yaml
 spec:
@@ -425,6 +702,41 @@ spec:
     operator: Exists
     effect: NoSchedule
 ```
+
+If you need the pods to be scheduled on specific nodes you may use [node affinity](https://kubernetes.io/docs/tasks/configure-pod-container/assign-pods-nodes-using-node-affinity/)
+to specify a set of label(s), of which a prospective host node must have at least one. This could be used to
+place nodes with certain hardware capabilities (e.g. SSD drives) in certain environments or network segments,
+e.g. for PCI compliance.
+
+```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: postgresql
+metadata:
+  name: acid-minimal-cluster
+spec:
+  teamId: "ACID"
+  nodeAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: environment
+          operator: In
+          values:
+          - pci
+```
+
+If you need to define a `nodeAffinity` for all your Postgres clusters use the
+`node_readiness_label` [configuration](administrator.md#node-readiness-labels).
+
+## In-place major version upgrade
+
+Starting with Spilo 13, operator supports in-place major version upgrade to a
+higher major version (e.g. from PG 10 to PG 13). To trigger the upgrade,
+simply increase the version in the manifest. It is your responsibility to test
+your applications against the new version before the upgrade; downgrading is
+not supported. The easiest way to do so is to try the upgrade on the cloned
+cluster first (see next chapter). More details can be found in the
+[admin docs](administrator.md#minor-and-major-version-upgrade).
 
 ## How to clone an existing PostgreSQL cluster
 
@@ -445,27 +757,40 @@ source cluster. If you create it in the same Kubernetes environment, use a
 different name.
 
 ```yaml
+apiVersion: "acid.zalan.do/v1"
+kind: postgresql
+metadata:
+  name: acid-minimal-cluster-clone
 spec:
   clone:
     uid: "efd12e58-5786-11e8-b5a7-06148230260c"
-    cluster: "acid-batman"
+    cluster: "acid-minimal-cluster"
     timestamp: "2017-12-19T12:40:33+01:00"
 ```
 
 Here `cluster` is a name of a source cluster that is going to be cloned. A new
 cluster will be cloned from S3, using the latest backup before the `timestamp`.
-Note, that a time zone is required for `timestamp` in the format of +00:00 which
-is UTC. The `uid` field is also mandatory. The operator will use it to find a
-correct key inside an S3 bucket. You can find this field in the metadata of the
-source cluster:
+Note, a time zone is required for `timestamp` in the format of `+00:00` (UTC).
+
+The operator will try to find the WAL location based on the configured
+`wal_[s3|gs]_bucket` or `wal_az_storage_account` and the specified `uid`.
+You can find the UID of the source cluster in its metadata:
 
 ```yaml
 apiVersion: acid.zalan.do/v1
 kind: postgresql
 metadata:
-  name: acid-test-cluster
+  name: acid-minimal-cluster
   uid: efd12e58-5786-11e8-b5a7-06148230260c
 ```
+
+If your source cluster uses a WAL location different from the global
+configuration you can specify the full path under `s3_wal_path`. For
+[Google Cloud Platform](administrator.md#google-cloud-platform-setup)
+or [Azure](administrator.md#azure-setup)
+it can only be set globally with [custom Pod environment variables](administrator.md#custom-pod-environment-variables)
+or locally in the Postgres manifest's [`env`](administrator.md#via-postgres-cluster-manifest) section.
+
 
 For non AWS S3 following settings can be set to support cloning from other S3
 implementations:
@@ -474,8 +799,9 @@ implementations:
 spec:
   clone:
     uid: "efd12e58-5786-11e8-b5a7-06148230260c"
-    cluster: "acid-batman"
+    cluster: "acid-minimal-cluster"
     timestamp: "2017-12-19T12:40:33+01:00"
+    s3_wal_path: "s3://custom/path/to/bucket"
     s3_endpoint: https://s3.acme.org
     s3_access_key_id: 0123456789abcdef0123456789abcdef
     s3_secret_access_key: 0123456789abcdef0123456789abcdef
@@ -484,7 +810,8 @@ spec:
 
 ### Clone directly
 
-Another way to get a fresh copy of your source DB cluster is via basebackup. To
+Another way to get a fresh copy of your source DB cluster is via
+[pg_basebackup](https://www.postgresql.org/docs/13/app-pgbasebackup.html). To
 use this feature simply leave out the timestamp field from the clone section.
 The operator will connect to the service of the source cluster by name. If the
 cluster is called test, then the connection string will look like host=test
@@ -494,56 +821,116 @@ namespace.
 ```yaml
 spec:
   clone:
-    cluster: "acid-batman"
+    cluster: "acid-minimal-cluster"
 ```
 
 Be aware that on a busy source database this can result in an elevated load!
 
+## Restore in place
+
+There is also a possibility to restore a database without cloning it. The
+advantage to this is that there is no need to change anything on the
+application side. However, as it involves deleting the database first, this
+process is of course riskier than cloning (which involves adjusting the
+connection parameters of the app).
+
+First, make sure there is no writing activity on your DB, and save the UID.
+Then delete the `postgresql` K8S resource:
+
+```bash
+zkubectl delete postgresql acid-test-restore
+```
+
+Then deploy a new manifest with the same name, referring to itself
+(both name and UID) in the `clone` section:
+
+```yaml
+metadata:
+  name: acid-minimal-cluster
+  # [...]
+spec:
+  # [...]
+  clone:
+    cluster: "acid-minimal-cluster"  # the same as metadata.name above!
+    uid: "<original_UID>"
+    timestamp: "2022-04-01T10:11:12.000+00:00"
+```
+
+This will create a new database cluster with the same name but different UID,
+whereas the database will be in the state it was at the specified time.
+
+:warning: The backups and WAL files for the original DB are retained under the
+original UID, making it possible retry restoring. However, it is probably
+better to create a temporary clone for experimenting or finding out to which
+point you should restore.
+
 ## Setting up a standby cluster
 
 Standby cluster is a [Patroni feature](https://github.com/zalando/patroni/blob/master/docs/replica_bootstrap.rst#standby-cluster)
-that first clones a database, and keeps replicating changes afterwards. As the
-replication is happening by the means of archived WAL files (stored on S3 or
-the equivalent of other cloud providers), the standby cluster can exist in a
-different location than its source database. Unlike cloning, the PostgreSQL
-version between source and target cluster has to be the same.
+that first clones a database, and keeps replicating changes afterwards. It can
+exist in a different location than its source database, but unlike cloning,
+the PostgreSQL version between source and target cluster has to be the same.
 
 To start a cluster as standby, add the following `standby` section in the YAML
-file and specify the S3 bucket path. An empty path will result in an error and
-no statefulset will be created.
+file. You can stream changes from archived WAL files (AWS S3 or Google Cloud
+Storage) or from a remote primary. Only one option can be specfied in the
+manifest:
 
 ```yaml
 spec:
   standby:
-    s3_wal_path: "s3 bucket path to the master"
+    s3_wal_path: "s3://<bucketname>/spilo/<source_db_cluster>/<UID>/wal/<PGVERSION>"
 ```
 
-At the moment, the operator only allows to stream from the WAL archive of the
-master. Thus, it is recommended to deploy standby clusters with only [one pod](../manifests/standby-manifest.yaml#L10).
-You can raise the instance count when detaching. Note, that the same pod role
-labels like for normal clusters are used: The standby leader is labeled as
-`master`.
+For GCS, you have to define STANDBY_GOOGLE_APPLICATION_CREDENTIALS as a
+[custom pod environment variable](administrator.md#custom-pod-environment-variables).
+It is not set from the config to allow for overridding.
+
+```yaml
+spec:
+  standby:
+    gs_wal_path: "gs://<bucketname>/spilo/<source_db_cluster>/<UID>/wal/<PGVERSION>"
+```
+
+For a remote primary you specify the host address and optionally the port.
+If you leave out the port Patroni will use `"5432"`.
+
+```yaml
+spec:
+  standby:
+    standby_host: "acid-minimal-cluster.default"
+    standby_port: "5433"
+```
+
+Note, that the pods and services use the same role labels like for normal clusters:
+The standby leader is labeled as `master`. When using the `standby_host` option
+you have to copy the credentials from the source cluster's secrets to successfully
+bootstrap a standby cluster (see next chapter).
 
 ### Providing credentials of source cluster
 
 A standby cluster is replicating the data (including users and passwords) from
 the source database and is read-only. The system and application users (like
 standby, postgres etc.) all have a password that does not match the credentials
-stored in secrets which are created by the operator. One solution is to create
-secrets beforehand and paste in the credentials of the source cluster.
+stored in secrets which are created by the operator. You have two options:
+
+a. Create secrets manually beforehand and paste the credentials of the source
+   cluster
+b. Let the operator create the secrets when it bootstraps the standby cluster.
+   Patch the secrets with the credentials of the source cluster. Replace the
+   spilo pods.
+
 Otherwise, you will see errors in the Postgres logs saying users cannot log in
 and the operator logs will complain about not being able to sync resources.
+If you stream changes from a remote primary you have to align the secrets or
+the standby cluster will not start up.
 
-When you only run a standby leader, you can safely ignore this, as it will be
-sorted out once the cluster is detached from the source. It is also harmless if
-you don’t plan it. But, when you created a standby replica, too, fix the
-credentials right away. WAL files will pile up on the standby leader if no
-connection can be established between standby replica(s). You can also edit the
-secrets after their creation. Find them by:
-
-```bash
-kubectl get secrets --all-namespaces | grep <standby-cluster-name>
-```
+If you stream changes from WAL files and you only run a standby leader, you
+can safely ignore the secret mismatch, as it will be sorted out once the
+cluster is detached from the source. It is also harmless if you do not plan it.
+But, when you create a standby replica, too, fix the credentials right away.
+WAL files will pile up on the standby leader if no connection can be
+established between standby replica(s).
 
 ### Promote the standby
 
@@ -672,8 +1059,8 @@ size of volumes that correspond to the previously running pods is not changed.
 
 ## Logical backups
 
-You can enable logical backups from the cluster manifest by adding the following
-parameter in the spec section:
+You can enable logical backups (SQL dumps) from the cluster manifest by adding
+the following parameter in the spec section:
 
 ```yaml
 spec:
@@ -698,11 +1085,17 @@ manifest:
 ```yaml
 spec:
   enableConnectionPooler: true
+  enableReplicaConnectionPooler: true
 ```
 
 This will tell the operator to create a connection pooler with default
 configuration, through which one can access the master via a separate service
-`{cluster-name}-pooler`. In most of the cases the
+`{cluster-name}-pooler`. With the first option, connection pooler for master service
+is created and with the second option, connection pooler for replica is created.
+Note that both of these flags are independent of each other and user can set or
+unset any of them as per their requirements without any effect on the other.
+
+In most of the cases the
 [default configuration](reference/operator_parameters.md#connection-pooler-configuration)
 should be good enough. To configure a new connection pooler individually for
 each Postgres cluster, specify:

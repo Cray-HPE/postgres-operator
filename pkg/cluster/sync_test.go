@@ -1,261 +1,367 @@
 package cluster
 
 import (
-	"fmt"
-	"strings"
+	"bytes"
+	"io/ioutil"
+	"net/http"
 	"testing"
+	"time"
 
-	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
-	"github.com/zalando/postgres-operator/pkg/util/config"
-	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
+	"context"
 
-	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/golang/mock/gomock"
+	"github.com/sirupsen/logrus"
+	"github.com/stretchr/testify/assert"
+	"github.com/zalando/postgres-operator/mocks"
+	acidv1 "github.com/zalando/postgres-operator/pkg/apis/acid.zalan.do/v1"
+	fakeacidv1 "github.com/zalando/postgres-operator/pkg/generated/clientset/versioned/fake"
+	"github.com/zalando/postgres-operator/pkg/spec"
+	"github.com/zalando/postgres-operator/pkg/util/config"
+	"github.com/zalando/postgres-operator/pkg/util/k8sutil"
+	"github.com/zalando/postgres-operator/pkg/util/patroni"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
-func int32ToPointer(value int32) *int32 {
-	return &value
+var patroniLogger = logrus.New().WithField("test", "patroni")
+var acidClientSet = fakeacidv1.NewSimpleClientset()
+var clientSet = fake.NewSimpleClientset()
+
+func newMockPod(ip string) *v1.Pod {
+	return &v1.Pod{
+		Status: v1.PodStatus{
+			PodIP: ip,
+		},
+	}
 }
 
-func deploymentUpdated(cluster *Cluster, err error, reason SyncReason) error {
-	if cluster.ConnectionPooler.Deployment.Spec.Replicas == nil ||
-		*cluster.ConnectionPooler.Deployment.Spec.Replicas != 2 {
-		return fmt.Errorf("Wrong nubmer of instances")
-	}
-
-	return nil
+func newFakeK8sSyncClient() (k8sutil.KubernetesClient, *fake.Clientset) {
+	return k8sutil.KubernetesClient{
+		PodsGetter:         clientSet.CoreV1(),
+		PostgresqlsGetter:  acidClientSet.AcidV1(),
+		StatefulSetsGetter: clientSet.AppsV1(),
+	}, clientSet
 }
 
-func objectsAreSaved(cluster *Cluster, err error, reason SyncReason) error {
-	if cluster.ConnectionPooler == nil {
-		return fmt.Errorf("Connection pooler resources are empty")
-	}
-
-	if cluster.ConnectionPooler.Deployment == nil {
-		return fmt.Errorf("Deployment was not saved")
-	}
-
-	if cluster.ConnectionPooler.Service == nil {
-		return fmt.Errorf("Service was not saved")
-	}
-
-	return nil
+func newFakeK8sSyncSecretsClient() (k8sutil.KubernetesClient, *fake.Clientset) {
+	return k8sutil.KubernetesClient{
+		SecretsGetter: clientSet.CoreV1(),
+	}, clientSet
 }
 
-func objectsAreDeleted(cluster *Cluster, err error, reason SyncReason) error {
-	if cluster.ConnectionPooler != nil {
-		return fmt.Errorf("Connection pooler was not deleted")
+func TestSyncStatefulSetsAnnotations(t *testing.T) {
+	testName := "test syncing statefulsets annotations"
+	client, _ := newFakeK8sSyncClient()
+	clusterName := "acid-test-cluster"
+	namespace := "default"
+	inheritedAnnotation := "environment"
+
+	pg := acidv1.Postgresql{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        clusterName,
+			Namespace:   namespace,
+			Annotations: map[string]string{inheritedAnnotation: "test"},
+		},
+		Spec: acidv1.PostgresSpec{
+			Volume: acidv1.Volume{
+				Size: "1Gi",
+			},
+		},
 	}
 
-	return nil
-}
-
-func noEmptySync(cluster *Cluster, err error, reason SyncReason) error {
-	for _, msg := range reason {
-		if strings.HasPrefix(msg, "update [] from '<nil>' to '") {
-			return fmt.Errorf("There is an empty reason, %s", msg)
-		}
-	}
-
-	return nil
-}
-
-func TestConnectionPoolerSynchronization(t *testing.T) {
-	testName := "Test connection pooler synchronization"
 	var cluster = New(
 		Config{
 			OpConfig: config.Config{
-				ProtectedRoles: []string{"admin"},
-				Auth: config.Auth{
-					SuperUsername:       superUserName,
-					ReplicationUsername: replicationUserName,
-				},
-				ConnectionPooler: config.ConnectionPooler{
-					ConnectionPoolerDefaultCPURequest:    "100m",
-					ConnectionPoolerDefaultCPULimit:      "100m",
-					ConnectionPoolerDefaultMemoryRequest: "100Mi",
-					ConnectionPoolerDefaultMemoryLimit:   "100Mi",
-					NumberOfInstances:                    int32ToPointer(1),
+				PodManagementPolicy: "ordered_ready",
+				Resources: config.Resources{
+					ClusterLabels:         map[string]string{"application": "spilo"},
+					ClusterNameLabel:      "cluster-name",
+					DefaultCPURequest:     "300m",
+					DefaultCPULimit:       "300m",
+					DefaultMemoryRequest:  "300Mi",
+					DefaultMemoryLimit:    "300Mi",
+					InheritedAnnotations:  []string{inheritedAnnotation},
+					PodRoleLabel:          "spilo-role",
+					ResourceCheckInterval: time.Duration(3),
+					ResourceCheckTimeout:  time.Duration(10),
 				},
 			},
-		}, k8sutil.KubernetesClient{}, acidv1.Postgresql{}, logger, eventRecorder)
+		}, client, pg, logger, eventRecorder)
 
-	cluster.Statefulset = &appsv1.StatefulSet{
+	cluster.Name = clusterName
+	cluster.Namespace = namespace
+
+	// create a statefulset
+	_, err := cluster.createStatefulSet()
+	assert.NoError(t, err)
+
+	// patch statefulset and add annotation
+	patchData, err := metaAnnotationsPatch(map[string]string{"test-anno": "true"})
+	assert.NoError(t, err)
+
+	newSts, err := cluster.KubeClient.StatefulSets(namespace).Patch(
+		context.TODO(),
+		clusterName,
+		types.MergePatchType,
+		[]byte(patchData),
+		metav1.PatchOptions{},
+		"")
+	assert.NoError(t, err)
+
+	cluster.Statefulset = newSts
+
+	// first compare running with desired statefulset - they should not match
+	// because no inherited annotations or downscaler annotations are configured
+	desiredSts, err := cluster.generateStatefulSet(&cluster.Postgresql.Spec)
+	assert.NoError(t, err)
+
+	cmp := cluster.compareStatefulSetWith(desiredSts)
+	if cmp.match {
+		t.Errorf("%s: match between current and desired statefulsets albeit differences: %#v", testName, cmp)
+	}
+
+	// now sync statefulset - the diff will trigger a replacement of the statefulset
+	cluster.syncStatefulSet()
+
+	// compare again after the SYNC - must be identical to the desired state
+	cmp = cluster.compareStatefulSetWith(desiredSts)
+	if !cmp.match {
+		t.Errorf("%s: current and desired statefulsets are not matching %#v", testName, cmp)
+	}
+
+	// check if inherited annotation exists
+	if _, exists := desiredSts.Annotations[inheritedAnnotation]; !exists {
+		t.Errorf("%s: inherited annotation not found in desired statefulset: %#v", testName, desiredSts.Annotations)
+	}
+}
+
+func TestCheckAndSetGlobalPostgreSQLConfiguration(t *testing.T) {
+	testName := "test config comparison"
+	client, _ := newFakeK8sSyncClient()
+	clusterName := "acid-test-cluster"
+	namespace := "default"
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	pg := acidv1.Postgresql{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-sts",
+			Name:      clusterName,
+			Namespace: namespace,
+		},
+		Spec: acidv1.PostgresSpec{
+			Patroni: acidv1.Patroni{
+				TTL: 20,
+			},
+			PostgresqlParam: acidv1.PostgresqlParam{
+				Parameters: map[string]string{
+					"log_min_duration_statement": "200",
+					"max_connections":            "50",
+				},
+			},
+			Volume: acidv1.Volume{
+				Size: "1Gi",
+			},
 		},
 	}
 
-	clusterMissingObjects := *cluster
-	clusterMissingObjects.KubeClient = k8sutil.ClientMissingObjects()
+	var cluster = New(
+		Config{
+			OpConfig: config.Config{
+				PodManagementPolicy: "ordered_ready",
+				Resources: config.Resources{
+					ClusterLabels:         map[string]string{"application": "spilo"},
+					ClusterNameLabel:      "cluster-name",
+					DefaultCPURequest:     "300m",
+					DefaultCPULimit:       "300m",
+					DefaultMemoryRequest:  "300Mi",
+					DefaultMemoryLimit:    "300Mi",
+					PodRoleLabel:          "spilo-role",
+					ResourceCheckInterval: time.Duration(3),
+					ResourceCheckTimeout:  time.Duration(10),
+				},
+			},
+		}, client, pg, logger, eventRecorder)
 
-	clusterMock := *cluster
-	clusterMock.KubeClient = k8sutil.NewMockKubernetesClient()
+	// mocking a config after setConfig is called
+	configJson := `{"postgresql": {"parameters": {"log_min_duration_statement": 200, "max_connections": 50}}}, "ttl": 20}`
+	r := ioutil.NopCloser(bytes.NewReader([]byte(configJson)))
 
-	clusterDirtyMock := *cluster
-	clusterDirtyMock.KubeClient = k8sutil.NewMockKubernetesClient()
-	clusterDirtyMock.ConnectionPooler = &ConnectionPoolerObjects{
-		Deployment: &appsv1.Deployment{},
-		Service:    &v1.Service{},
+	response := http.Response{
+		StatusCode: 200,
+		Body:       r,
 	}
 
-	clusterNewDefaultsMock := *cluster
-	clusterNewDefaultsMock.KubeClient = k8sutil.NewMockKubernetesClient()
+	mockClient := mocks.NewMockHTTPClient(ctrl)
+	mockClient.EXPECT().Do(gomock.Any()).Return(&response, nil).AnyTimes()
 
+	p := patroni.New(patroniLogger, mockClient)
+	cluster.patroni = p
+	mockPod := newMockPod("192.168.100.1")
+
+	// simulate existing config that differs from cluster.Spec
 	tests := []struct {
-		subTest          string
-		oldSpec          *acidv1.Postgresql
-		newSpec          *acidv1.Postgresql
-		cluster          *Cluster
-		defaultImage     string
-		defaultInstances int32
-		check            func(cluster *Cluster, err error, reason SyncReason) error
+		subtest       string
+		patroni       acidv1.Patroni
+		pgParams      map[string]string
+		restartMaster bool
 	}{
 		{
-			subTest: "create if doesn't exist",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
+			subtest: "Patroni and Postgresql.Parameters differ - restart replica first",
+			patroni: acidv1.Patroni{
+				TTL: 30, // desired 20
 			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
+			pgParams: map[string]string{
+				"log_min_duration_statement": "500", // desired 200
+				"max_connections":            "100", // desired 50
 			},
-			cluster:          &clusterMissingObjects,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            objectsAreSaved,
+			restartMaster: false,
 		},
 		{
-			subTest: "create if doesn't exist with a flag",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{},
+			subtest: "multiple Postgresql.Parameters differ - restart replica first",
+			patroni: acidv1.Patroni{
+				TTL: 20,
 			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					EnableConnectionPooler: boolToPointer(true),
-				},
+			pgParams: map[string]string{
+				"log_min_duration_statement": "500", // desired 200
+				"max_connections":            "100", // desired 50
 			},
-			cluster:          &clusterMissingObjects,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            objectsAreSaved,
+			restartMaster: false,
 		},
 		{
-			subTest: "create from scratch",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{},
+			subtest: "desired max_connections bigger - restart replica first",
+			patroni: acidv1.Patroni{
+				TTL: 20,
 			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
+			pgParams: map[string]string{
+				"log_min_duration_statement": "200",
+				"max_connections":            "30", // desired 50
 			},
-			cluster:          &clusterMissingObjects,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            objectsAreSaved,
+			restartMaster: false,
 		},
 		{
-			subTest: "delete if not needed",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
+			subtest: "desired max_connections smaller - restart master first",
+			patroni: acidv1.Patroni{
+				TTL: 20,
 			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{},
+			pgParams: map[string]string{
+				"log_min_duration_statement": "200",
+				"max_connections":            "100", // desired 50
 			},
-			cluster:          &clusterMock,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            objectsAreDeleted,
-		},
-		{
-			subTest: "cleanup if still there",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{},
-			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{},
-			},
-			cluster:          &clusterDirtyMock,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            objectsAreDeleted,
-		},
-		{
-			subTest: "update deployment",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{
-						NumberOfInstances: int32ToPointer(1),
-					},
-				},
-			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{
-						NumberOfInstances: int32ToPointer(2),
-					},
-				},
-			},
-			cluster:          &clusterMock,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            deploymentUpdated,
-		},
-		{
-			subTest: "update image from changed defaults",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
-			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					ConnectionPooler: &acidv1.ConnectionPooler{},
-				},
-			},
-			cluster:          &clusterNewDefaultsMock,
-			defaultImage:     "pooler:2.0",
-			defaultInstances: 2,
-			check:            deploymentUpdated,
-		},
-		{
-			subTest: "there is no sync from nil to an empty spec",
-			oldSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					EnableConnectionPooler: boolToPointer(true),
-					ConnectionPooler:       nil,
-				},
-			},
-			newSpec: &acidv1.Postgresql{
-				Spec: acidv1.PostgresSpec{
-					EnableConnectionPooler: boolToPointer(true),
-					ConnectionPooler:       &acidv1.ConnectionPooler{},
-				},
-			},
-			cluster:          &clusterMock,
-			defaultImage:     "pooler:1.0",
-			defaultInstances: 1,
-			check:            noEmptySync,
+			restartMaster: true,
 		},
 	}
+
 	for _, tt := range tests {
-		tt.cluster.OpConfig.ConnectionPooler.Image = tt.defaultImage
-		tt.cluster.OpConfig.ConnectionPooler.NumberOfInstances =
-			int32ToPointer(tt.defaultInstances)
+		requireMasterRestart, err := cluster.checkAndSetGlobalPostgreSQLConfiguration(mockPod, tt.patroni, cluster.Spec.Patroni, tt.pgParams, cluster.Spec.Parameters)
+		assert.NoError(t, err)
+		if requireMasterRestart != tt.restartMaster {
+			t.Errorf("%s - %s: unexpect master restart strategy, got %v, expected %v", testName, tt.subtest, requireMasterRestart, tt.restartMaster)
+		}
+	}
+}
 
-		reason, err := tt.cluster.syncConnectionPooler(tt.oldSpec,
-			tt.newSpec, mockInstallLookupFunction)
+func TestUpdateSecret(t *testing.T) {
+	testName := "test syncing secrets"
+	client, _ := newFakeK8sSyncSecretsClient()
 
-		if err := tt.check(tt.cluster, err, reason); err != nil {
-			t.Errorf("%s [%s]: Could not synchronize, %+v",
-				testName, tt.subTest, err)
+	clusterName := "acid-test-cluster"
+	namespace := "default"
+	dbname := "app"
+	dbowner := "appowner"
+	secretTemplate := config.StringTemplate("{username}.{cluster}.credentials")
+	rotationUsers := make(spec.PgUserMap)
+	retentionUsers := make([]string, 0)
+
+	// define manifest users and enable rotation for dbowner
+	pg := acidv1.Postgresql{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      clusterName,
+			Namespace: namespace,
+		},
+		Spec: acidv1.PostgresSpec{
+			Databases:                      map[string]string{dbname: dbowner},
+			Users:                          map[string]acidv1.UserFlags{"foo": {}, dbowner: {}},
+			UsersWithInPlaceSecretRotation: []string{dbowner},
+			Volume: acidv1.Volume{
+				Size: "1Gi",
+			},
+		},
+	}
+
+	// new cluster with enabled password rotation
+	var cluster = New(
+		Config{
+			OpConfig: config.Config{
+				Auth: config.Auth{
+					SecretNameTemplate:            secretTemplate,
+					EnablePasswordRotation:        true,
+					PasswordRotationInterval:      1,
+					PasswordRotationUserRetention: 3,
+				},
+				Resources: config.Resources{
+					ClusterLabels:    map[string]string{"application": "spilo"},
+					ClusterNameLabel: "cluster-name",
+				},
+			},
+		}, client, pg, logger, eventRecorder)
+
+	cluster.Name = clusterName
+	cluster.Namespace = namespace
+	cluster.pgUsers = map[string]spec.PgUser{}
+	cluster.initRobotUsers()
+
+	// create secrets
+	cluster.syncSecrets()
+	// initialize rotation with current time
+	cluster.syncSecrets()
+
+	dayAfterTomorrow := time.Now().AddDate(0, 0, 2)
+
+	for username := range cluster.Spec.Users {
+		pgUser := cluster.pgUsers[username]
+
+		// first, get the secret
+		secret, err := cluster.KubeClient.Secrets(namespace).Get(context.TODO(), secretTemplate.Format("username", username, "cluster", clusterName), metav1.GetOptions{})
+		assert.NoError(t, err)
+		secretPassword := string(secret.Data["password"])
+
+		// now update the secret setting a next rotation date (tomorrow + interval)
+		cluster.updateSecret(username, secret, &rotationUsers, &retentionUsers, dayAfterTomorrow)
+		updatedSecret, err := cluster.KubeClient.Secrets(namespace).Get(context.TODO(), secretTemplate.Format("username", username, "cluster", clusterName), metav1.GetOptions{})
+		assert.NoError(t, err)
+
+		// check that passwords are different
+		rotatedPassword := string(updatedSecret.Data["password"])
+		if secretPassword == rotatedPassword {
+			t.Errorf("%s: password unchanged in updated secret for %s", testName, username)
+		}
+
+		// check that next rotation date is tomorrow + interval, not date in secret + interval
+		nextRotation := string(updatedSecret.Data["nextRotation"])
+		_, nextRotationDate := cluster.getNextRotationDate(dayAfterTomorrow)
+		if nextRotation != nextRotationDate {
+			t.Errorf("%s: updated secret of %s does not contain correct rotation date: expected %s, got %s", testName, username, nextRotationDate, nextRotation)
+		}
+
+		// compare username, when it's dbowner they should be equal because of UsersWithInPlaceSecretRotation
+		secretUsername := string(updatedSecret.Data["username"])
+		if pgUser.IsDbOwner {
+			if secretUsername != username {
+				t.Errorf("%s: username differs in updated secret: expected %s, got %s", testName, username, secretUsername)
+			}
+		} else {
+			rotatedUsername := username + dayAfterTomorrow.Format("060102")
+			if secretUsername != rotatedUsername {
+				t.Errorf("%s: updated secret does not contain correct username: expected %s, got %s", testName, rotatedUsername, secretUsername)
+			}
+
+			if len(rotationUsers) != 1 && len(retentionUsers) != 1 {
+				t.Errorf("%s: unexpected number of users to rotate - expected only %s, found %d", testName, username, len(rotationUsers))
+			}
 		}
 	}
 }
