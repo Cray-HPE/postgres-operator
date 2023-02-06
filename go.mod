@@ -8,13 +8,13 @@ require (
 	github.com/motomux/pretty v0.0.0-20161209205251-b2aad2c9a95d
 	github.com/r3labs/diff v1.1.0
 	github.com/sirupsen/logrus v1.6.0
-	github.com/stretchr/testify v1.5.1
+	github.com/stretchr/testify v1.6.1
 	golang.org/x/mod v0.3.0 // indirect
 	golang.org/x/tools v0.0.0-20200615222825-6aa8f57aacd9 // indirect
 	gopkg.in/yaml.v2 v2.2.8
-	k8s.io/api v0.18.3
+	k8s.io/api v0.20.0
 	k8s.io/apiextensions-apiserver v0.18.3
-	k8s.io/apimachinery v0.18.3
-	k8s.io/client-go v0.18.3
+	k8s.io/apimachinery v0.20.0
+	k8s.io/client-go v0.20.0
 	k8s.io/code-generator v0.18.3
 )
